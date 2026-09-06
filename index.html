@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Session Monitor</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66;
+    --line: #e4e4e0; --waiting: #b8541f; --busy: #2f6f4f; --idle: #8a8a84;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --panel: #1e1e23; --ink: #ececeb; --muted: #94948d;
+      --line: #2e2e35; --waiting: #e08b4a; --busy: #6bbd8f; --idle: #6e6e78;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.5rem; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: .8rem; margin-bottom: 1.5rem; }
+  .counts { display: flex; gap: 1.5rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+  .count b { font-size: 1.5rem; font-weight: 600; display: block; letter-spacing: -.02em; }
+  .count span { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  .group { margin-bottom: 1.5rem; }
+  .group > h2 {
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0 0 .5rem; font-weight: 600;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: .7rem .9rem; margin-bottom: .4rem; display: flex;
+    align-items: baseline; gap: .75rem; flex-wrap: wrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; align-self: center; }
+  .waiting .dot { background: var(--waiting); }
+  .busy .dot { background: var(--busy); }
+  .idle .dot, .unknown .dot { background: var(--idle); }
+  .name { font-weight: 600; }
+  .cwd {
+    color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .75rem; overflow-wrap: anywhere;
+  }
+  .meta { margin-left: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; }
+  .needs { color: var(--waiting); font-size: .78rem; width: 100%; padding-left: 1rem; }
+  .empty { color: var(--muted); font-style: italic; }
+  footer { color: var(--muted); font-size: .72rem; margin-top: 2rem;
+           border-top: 1px solid var(--line); padding-top: .75rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Claude Session Monitor</h1>
+  <div class="sub">Live sessions on this machine. Read-only.</div>
+  <div class="counts" id="counts"></div>
+  <div id="groups"></div>
+  <footer id="foot">loading…</footer>
+</main>
+
+<script>
+const ORDER = ["waiting", "busy", "idle", "unknown"];
+const LABEL = { waiting: "Waiting on you", busy: "Working", idle: "Idle", unknown: "Unknown" };
+
+function ago(ms) {
+  if (!ms) return "";
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return Math.floor(s) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;   // textContent, never innerHTML:
+  return n;                                  // session names are arbitrary text
+}
+
+function render(data) {
+  const counts = document.getElementById("counts");
+  counts.replaceChildren();
+  for (const [label, value] of [["live", data.counts.live], ["waiting", data.counts.waiting],
+                                ["working", data.counts.busy], ["stale files", data.counts.stale]]) {
+    const c = el("div", "count");
+    c.append(el("b", null, value), el("span", null, label));
+    counts.append(c);
+  }
+
+  const groups = document.getElementById("groups");
+  groups.replaceChildren();
+
+  if (!data.sessions.length) {
+    groups.append(el("p", "empty", "No live sessions."));
+  }
+
+  for (const status of ORDER) {
+    const rows = data.sessions.filter(s => s.status === status);
+    if (!rows.length) continue;
+
+    const g = el("div", "group");
+    g.append(el("h2", null, LABEL[status] + " · " + rows.length));
+
+    for (const s of rows) {
+      const card = el("div", "card " + status);
+      card.append(el("span", "dot"));
+      card.append(el("span", "name", s.name));
+      card.append(el("span", "cwd", s.cwd));
+      card.append(el("span", "meta", "pid " + s.pid + " · up " + ago(s.startedAt)));
+      if (s.needs && status === "waiting") card.append(el("div", "needs", "↳ " + s.needs));
+      g.append(card);
+    }
+    groups.append(g);
+  }
+
+  document.getElementById("foot").textContent =
+    "Updated " + new Date(data.scannedAt).toLocaleTimeString() +
+    " · " + data.counts.stale + " stale registry files ignored";
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/sessions");
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("foot").textContent = "Server unreachable — is server.py running?";
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
